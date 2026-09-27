@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>B站AI字幕强制开启器</title>
+  <title>B站 AI 字幕</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
@@ -10,8 +10,8 @@
 <header class="hd">
   <img class="hd-logo" src="../icons/icon32.png" alt="">
   <div class="hd-text">
-    <div class="hd-title">B站 AI 字幕强制开启器</div>
-    <div class="hd-sub" id="hdSub">v1.0.0</div>
+    <div class="hd-title">B站 AI 字幕</div>
+    <div class="hd-sub" id="hdSub">v2.0.0</div>
   </div>
   <label class="switch" title="总开关">
     <input type="checkbox" id="enabled">
@@ -24,41 +24,131 @@
     <span class="dot" id="statusDot"></span>
     <span class="status-text" id="statusText">正在读取当前页面…</span>
   </div>
-  <div class="status-meta" id="statusMeta"></div>
+  <div class="status-lines" id="statusLines"></div>
   <div class="btn-row">
-    <button type="button" class="btn btn-primary" id="btnForce">强制开启字幕</button>
+    <button type="button" class="btn btn-primary" id="btnRetryServer">让服务端重新生成</button>
     <button type="button" class="btn" id="btnOverlay">切换渲染层</button>
   </div>
 </section>
 
 <details class="card" open>
-  <summary>注入方式</summary>
+  <summary>字幕从哪里来</summary>
   <div class="card-body">
+    <p class="hint">
+      按「已有字幕轨 → B 站服务端生成 → 第三方接口」的顺序尝试，
+      前一条拿到结果就不再往下走。
+    </p>
+
     <label class="field switch-field">
-      <span>强制注入字幕数据<em>把免登录通道的字幕并进播放器接口响应</em></span>
-      <span class="switch sm"><input type="checkbox" id="forceInject"><span class="slider"></span></span>
+      <span>① 已有字幕轨<em>B 站自己的字幕。能注入播放器、用原生渲染（全屏/画中画都正常）</em></span>
+      <span class="switch sm"><input type="checkbox" id="srcExisting"><span class="slider"></span></span>
     </label>
+
     <label class="field switch-field">
-      <span>自动打开 AI 字幕<em>注入成功后自己把字幕语言点开</em></span>
-      <span class="switch sm"><input type="checkbox" id="autoOpen"><span class="slider"></span></span>
+      <span>② B 站服务端生成<em>调 AI 视频总结接口。没生成过的视频会被服务端排进处理队列，插件轮询等它出结果</em></span>
+      <span class="switch sm"><input type="checkbox" id="srcConclusion"><span class="slider"></span></span>
     </label>
     <div class="field">
-      <span>渲染方式</span>
-      <div class="seg" id="injectInto">
-        <label><input type="radio" name="injectInto" value="player"><span>用 B 站原生</span></label>
-        <label><input type="radio" name="injectInto" value="both"><span>原生 + 自建层</span></label>
-        <label><input type="radio" name="injectInto" value="overlay"><span>只用自建层</span></label>
-      </div>
-      <p class="hint">自建层才能做双语与样式自定义；开启后会自动隐藏 B 站原生字幕避免重叠。</p>
+      <span>最多等 <b id="vWait">90</b> 秒</span>
+      <input type="range" id="conclusionWait" min="0" max="300" step="10">
+      <p class="hint">超时不会丢：刷新一次页面，服务端处理完就能直接拿到。填 0 表示不限时。</p>
     </div>
+
+    <label class="field switch-field">
+      <span>③ 第三方接口<em>把视频信息发给你配的服务，拿回字幕再输出到视频上</em></span>
+      <span class="switch sm"><input type="checkbox" id="srcExternal"><span class="slider"></span></span>
+    </label>
   </div>
 </details>
 
 <details class="card">
-  <summary>双语与语言</summary>
+  <summary>第三方接口配置</summary>
+  <div class="card-body">
+    <div class="field">
+      <span>服务预设</span>
+      <select id="externalPreset">
+        <option value="generic">自定义接口（自己填模板）</option>
+        <option value="justoneapi">JustOneAPI · B站视频字幕</option>
+      </select>
+    </div>
+    <div class="field">
+      <span>接口地址（模板）</span>
+      <input type="text" id="externalUrl" placeholder="https://your-api/subtitle?bvid={bvid}&aid={aid}&cid={cid}">
+      <p class="hint">可用占位符：<code>{bvid}</code> <code>{aid}</code> <code>{cid}</code> <code>{token}</code> <code>{upMid}</code></p>
+    </div>
+    <div class="field">
+      <span>密钥 / Token</span>
+      <input type="password" id="externalToken" placeholder="只存本机，不会同步到云端">
+    </div>
+    <div class="field two-col">
+      <label>
+        <span>密钥放在</span>
+        <select id="externalTokenIn">
+          <option value="url">地址里（模板中的 {token}）</option>
+          <option value="header">请求头里</option>
+        </select>
+      </label>
+      <label>
+        <span>请求头名称</span>
+        <input type="text" id="externalTokenHeader" placeholder="Authorization">
+      </label>
+    </div>
+    <div class="field">
+      <span>响应怎么解读</span>
+      <select id="externalMode">
+        <option value="cues">直接是字幕数组（含时间轴）</option>
+        <option value="bili-subtitle-list">B站格式的字幕列表（含 subtitle_url）</option>
+        <option value="bili-subtitle-url">只有一个字幕文件地址</option>
+      </select>
+    </div>
+    <div class="field">
+      <span>字幕数组的路径</span>
+      <input type="text" id="externalListPath" placeholder="留空表示根节点；如 data.data">
+    </div>
+    <div class="field three-col">
+      <label>
+        <span>文本字段</span>
+        <input type="text" id="externalTextField" placeholder="content">
+      </label>
+      <label>
+        <span>开始字段</span>
+        <input type="text" id="externalFromField" placeholder="start_timestamp">
+      </label>
+      <label>
+        <span>结束字段</span>
+        <input type="text" id="externalToField" placeholder="end_timestamp">
+      </label>
+    </div>
+    <div class="btn-row">
+      <button type="button" class="btn" id="btnGrant">授权该接口域名</button>
+    </div>
+    <p class="hint">授权后请求由扩展后台发出，不受页面跨域限制。</p>
+  </div>
+</details>
+
+<details class="card">
+  <summary>输出与样式</summary>
   <div class="card-body">
     <label class="field switch-field">
-      <span>双语对照<em>同时加载两条轨，上下两行显示</em></span>
+      <span>强制注入已有字幕轨<em>把免登录通道的字幕并进播放器接口响应，让 AI 字幕开关出现</em></span>
+      <span class="switch sm"><input type="checkbox" id="forceInject"><span class="slider"></span></span>
+    </label>
+    <label class="field switch-field">
+      <span>自动打开字幕<em>注入成功后自己把字幕语言点开</em></span>
+      <span class="switch sm"><input type="checkbox" id="autoOpen"><span class="slider"></span></span>
+    </label>
+    <div class="field">
+      <span>输出方式</span>
+      <div class="seg">
+        <label><input type="radio" name="injectInto" value="player"><span>只用原生</span></label>
+        <label><input type="radio" name="injectInto" value="both"><span>原生 + 自建层</span></label>
+        <label><input type="radio" name="injectInto" value="overlay"><span>只用自建层</span></label>
+      </div>
+      <p class="hint">服务端生成与第三方直给的字幕没有字幕文件地址，放不进播放器原生轨道，只能用自建层。</p>
+    </div>
+
+    <label class="field switch-field">
+      <span>双语对照<em>同时加载两条轨，上下两行显示（需要自建层）</em></span>
       <span class="switch sm"><input type="checkbox" id="bilingual"><span class="slider"></span></span>
     </label>
     <div class="field two-col">
@@ -83,12 +173,7 @@
         </select>
       </label>
     </div>
-  </div>
-</details>
 
-<details class="card">
-  <summary>字幕样式</summary>
-  <div class="card-body">
     <div class="field two-col">
       <label>
         <span>字号 <b id="vFontSize">26</b> px</span>
@@ -126,53 +211,13 @@
   </div>
 </details>
 
-<details class="card">
-  <summary>ASR 兜底（无 AI 字幕时）</summary>
-  <div class="card-body">
-    <p class="hint warn">
-      只有当这个视频服务端确实没有 AI 字幕时才需要。识别在本机抓音频、分片发往你自己配置的接口，
-      需要保持视频播放。请填写 OpenAI 兼容的 <code>/v1/audio/transcriptions</code> 地址。
-    </p>
-    <label class="field switch-field">
-      <span>启用 ASR 兜底<em>不自动开跑，由你点浮标决定</em></span>
-      <span class="switch sm"><input type="checkbox" id="asrEnabled"><span class="slider"></span></span>
-    </label>
-    <div class="field">
-      <span>接口地址</span>
-      <input type="text" id="asrEndpoint" placeholder="https://api.example.com/v1/audio/transcriptions">
-    </div>
-    <div class="field">
-      <span>API Key</span>
-      <input type="password" id="asrApiKey" placeholder="sk-...（仅存本机）">
-    </div>
-    <div class="field two-col">
-      <label>
-        <span>模型</span>
-        <input type="text" id="asrModel" placeholder="whisper-1">
-      </label>
-      <label>
-        <span>语言</span>
-        <input type="text" id="asrLanguage" placeholder="zh">
-      </label>
-    </div>
-    <div class="field">
-      <span>分片长度 <b id="vChunk">20</b> 秒</span>
-      <input type="range" id="asrChunkSeconds" min="5" max="60" step="1">
-    </div>
-    <div class="btn-row">
-      <button type="button" class="btn" id="btnGrant">授权该接口域名</button>
-      <button type="button" class="btn" id="btnAsr">开始识别</button>
-      <button type="button" class="btn" id="btnAsrStop">停止</button>
-    </div>
-  </div>
-</details>
-
 <footer class="ft">
   <label class="mini"><input type="checkbox" id="debug"> 调试日志</label>
   <span class="ft-right" id="ftStats"></span>
 </footer>
 
 <script src="../lib/settings.js"></script>
+<script src="../lib/providers.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>

@@ -25,6 +25,8 @@
   'use strict';
 
   var NS = typeof globalThis !== 'undefined' ? globalThis.BASFBiliApi : null;
+  var WBI = typeof globalThis !== 'undefined' ? globalThis.BASFWbi : null;
+  var PROV = typeof globalThis !== 'undefined' ? globalThis.BASFProviders : null;
   if (!NS) return;                                   // lib/bili-api.js 没加载就先别动
   if (window.__BASF_HOOK_INSTALLED__) return;
   window.__BASF_HOOK_INSTALLED__ = true;
@@ -90,6 +92,36 @@
 
       case 'request-state':
         toContent('state', stateSnapshot());
+        break;
+
+      case 'request-conclusion':
+        requestConclusion(msg.payload && msg.payload.ids)
+          .then(function (r) {
+            toContent('conclusion-result', Object.assign(
+              { reqId: msg.payload && msg.payload.reqId }, r
+            ));
+          })
+          .catch(function (e) {
+            toContent('conclusion-result', {
+              reqId: msg.payload && msg.payload.reqId,
+              ok: false, state: 'error', message: String(e && e.message || e)
+            });
+          });
+        break;
+
+      case 'request-external':
+        requestExternal(msg.payload && msg.payload.ids, msg.payload && msg.payload.config)
+          .then(function (r) {
+            toContent('external-result', Object.assign(
+              { reqId: msg.payload && msg.payload.reqId }, r
+            ));
+          })
+          .catch(function (e) {
+            toContent('external-result', {
+              reqId: msg.payload && msg.payload.reqId,
+              ok: false, message: String(e && e.message || e)
+            });
+          });
         break;
 
       case 'fetch-subtitle-content':
@@ -177,6 +209,8 @@
    * 用 bvid 换 aid（预取通道需要 aid）。结果按 bvid 缓存。
    */
   var aidByBvid = Object.create(null);
+  /** UP 主 mid，AI 总结接口的 up_mid 参数用得上（可选但传了更稳） */
+  var upMidByBvid = Object.create(null);
 
   function resolveAid(ids) {
     if (ids.aid) return Promise.resolve(ids.aid);
@@ -188,6 +222,8 @@
       .then(function (j) {
         var aid = j && j.data ? Number(j.data.aid) || 0 : 0;
         if (aid) aidByBvid[ids.bvid] = aid;
+        var owner = j && j.data && j.data.owner;
+        if (owner && owner.mid) upMidByBvid[ids.bvid] = Number(owner.mid) || 0;
         return aid;
       }), ENDPOINT_TIMEOUT, 'view').catch(function () { return 0; });
   }
@@ -287,6 +323,142 @@
         }),
       15000, 'subtitle-file'
     );
+  }
+
+  // ------------------------------------------------------------ WBI 与 AI 总结
+
+  /** img_key / sub_key 每日更替，缓存几小时就够 */
+  var WBI_KEY_TTL = 3 * 60 * 60 * 1000;
+  var wbiKeys = null;
+
+  function getWbiKeys() {
+    if (wbiKeys && Date.now() - wbiKeys.at < WBI_KEY_TTL) {
+      return Promise.resolve(wbiKeys);
+    }
+    if (!WBI) return Promise.resolve(null);
+    return withTimeout(
+      fetch(NS.API_HOST + '/x/web-interface/nav', { credentials: 'include' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) {
+          var k = WBI.parseWbiKeys(j);
+          if (!k) return null;
+          wbiKeys = { imgKey: k.imgKey, subKey: k.subKey, at: Date.now() };
+          return wbiKeys;
+        }),
+      6000, 'nav'
+    ).catch(function (e) {
+      log('取 WBI 密钥失败', e);
+      return null;
+    });
+  }
+
+  /**
+   * 调 B 站「AI 视频总结」接口。
+   *
+   * ★ 这条接口就是"让服务端去生成字幕"的开关：视频没做过 AI 处理时，
+   *   请求它会把视频丢进服务端队列（data.code=1 且 stid="0"），
+   *   之后轮询同一个接口，处理完就能拿到 model_result.subtitle 里的服务端字幕。
+   *   所以它返回的 state 可能是 'pending' —— 这不是错误，是"等着就行"。
+   */
+  function requestConclusion(ids) {
+    if (!PROV || !WBI) {
+      return Promise.resolve({ ok: false, state: 'error', message: '签名模块未加载' });
+    }
+    if (!ids || !ids.cid) {
+      return Promise.resolve({ ok: false, state: 'error', message: '缺少 cid' });
+    }
+
+    return getWbiKeys().then(function (keys) {
+      if (!keys) {
+        return { ok: false, state: 'error', message: '拿不到 WBI 密钥（浏览器里可能没登录 B 站）' };
+      }
+
+      var params = { cid: ids.cid };
+      if (ids.aid) params.aid = ids.aid;
+      else if (ids.bvid) params.bvid = ids.bvid;
+      else return { ok: false, state: 'error', message: '缺少 aid 或 bvid' };
+
+      var upMid = ids.upMid || upMidByBvid[ids.bvid];
+      if (upMid) params.up_mid = upMid;
+
+      var url = WBI.signUrl(PROV.CONCLUSION_URL, params, keys.imgKey, keys.subKey);
+
+      return withTimeout(
+        fetch(url, { credentials: 'include' }).then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.json();
+        }),
+        20000, 'conclusion'
+      ).then(function (json) {
+        var a = PROV.analyzeConclusion(json);
+        var ready = a.state === 'ready';
+        var cues = ready ? PROV.extractConclusionCues(json) : [];
+        log('AI 总结状态', a.state, a.message || '');
+        return {
+          ok: ready,
+          state: a.state,
+          message: a.message,
+          stid: a.stid,
+          resultType: a.resultType,
+          summary: a.summary,
+          outline: ready ? PROV.extractConclusionOutline(json) : [],
+          cues: cues
+        };
+      }).catch(function (e) {
+        return { ok: false, state: 'error', message: String(e && e.message || e) };
+      });
+    });
+  }
+
+  // ------------------------------------------------------------ 第三方接口
+
+  /**
+   * 调用户自配的第三方字幕接口。
+   * 先试页面上下文（Referer 正确、能带上站点 Cookie）；失败由内容脚本转后台重试
+   * （后台不受 CORS 限制，但需要用户在面板里授权该域名）。
+   */
+  function requestExternal(ids, config) {
+    if (!PROV) return Promise.resolve({ ok: false, message: '适配模块未加载' });
+
+    var preset = PROV.EXTERNAL_PRESETS[config && config.preset]
+      || PROV.EXTERNAL_PRESETS.generic;
+    var built = PROV.buildExternalRequest(preset, ids, config);
+    if (!built) return Promise.resolve({ ok: false, message: '第三方接口地址没填' });
+
+    var headers = {};
+    built.headers.forEach(function (h) {
+      if (h && h.name && h.value) headers[h.name] = h.value;
+    });
+
+    return withTimeout(
+      fetch(built.url, {
+        method: built.method,
+        headers: headers,
+        credentials: 'omit'
+      }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }),
+      built.timeoutMs, 'external'
+    ).then(function (json) {
+      var p = PROV.parseExternalResponse(preset, config, json);
+      if (!p.ok) return { ok: false, message: p.error, kind: p.kind };
+      log('第三方接口命中', p.kind);
+      return {
+        ok: true,
+        kind: p.kind,
+        entries: p.entries || null,
+        url: p.url || null,
+        cues: p.cues || null
+      };
+    }).catch(function (e) {
+      // 页面上下文发不出去（多半是 CORS）→ 让内容脚本转后台再试
+      return {
+        ok: false,
+        retriable: true,
+        message: String(e && e.message || e)
+      };
+    });
   }
 
   // ------------------------------------------------------------ XHR 劫持

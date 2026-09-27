@@ -8,12 +8,12 @@
   'use strict';
 
   var SET = window.BASFSettings;
+  var PROV = window.BASFProviders;
   if (!SET) return;
 
   var settings = SET.defaults();
   var tabId = null;
   var saveTimer = 0;
-  var lastStatus = null;
 
   function $(id) {
     return document.getElementById(id);
@@ -69,16 +69,33 @@
 
   function scheduleSave() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(function () {
-      persist(true);
-    }, 260);
+    saveTimer = setTimeout(function () { persist(true); }, 260);
   }
 
   // ---------------------------------------------------------------- 表单填充
 
   function fillForm() {
     $('enabled').checked = settings.enabled;
-    $('hdSub').textContent = 'v1.0.0';
+    $('hdSub').textContent = 'v2.0.0';
+
+    var c = settings.sources;
+    $('srcExisting').checked = c.existing;
+    $('srcConclusion').checked = c.conclusion;
+    setRange('conclusionWait', 'vWait', c.conclusionWait);
+    $('srcExternal').checked = c.external;
+
+    $('externalPreset').value = c.externalPreset;
+    $('externalUrl').value = c.externalUrl;
+    $('externalToken').value = c.externalToken;
+    $('externalTokenIn').value = c.externalTokenIn;
+    $('externalTokenHeader').value = c.externalTokenHeader;
+    $('externalMode').value = c.externalMode;
+    $('externalListPath').value = c.externalListPath;
+    $('externalTextField').value = c.externalTextField;
+    $('externalFromField').value = c.externalFromField;
+    $('externalToField').value = c.externalToField;
+
+    writePresetDefaults(false);
 
     $('forceInject').checked = settings.forceInject;
     $('autoOpen').checked = settings.autoOpen;
@@ -101,15 +118,21 @@
     $('color').value = settings.style.color;
     $('strokeColor').value = settings.style.strokeColor;
 
-    $('asrEnabled').checked = settings.asr.enabled;
-    $('asrEndpoint').value = settings.asr.endpoint;
-    $('asrApiKey').value = settings.asr.apiKey;
-    $('asrModel').value = settings.asr.model;
-    $('asrLanguage').value = settings.asr.language;
-    setRange('asrChunkSeconds', 'vChunk', settings.asr.chunkSeconds);
-
     $('debug').checked = settings.debug;
     renderStats();
+  }
+
+  /** 选了内置预设时，把该预设的默认值填进空着的输入框（不覆盖用户已填的） */
+  function writePresetDefaults(force) {
+    if (!PROV) return;
+    var presetId = $('externalPreset').value;
+    var preset = PROV.EXTERNAL_PRESETS[presetId];
+    if (!preset || presetId === 'generic') return;
+
+    if (force || !$('externalUrl').value) $('externalUrl').value = preset.url || '';
+    if (force || !$('externalListPath').value) $('externalListPath').value = preset.listPath || '';
+    if (preset.mode) $('externalMode').value = preset.mode;
+    if (preset.tokenIn) $('externalTokenIn').value = preset.tokenIn;
   }
 
   function setRange(inputId, labelId, value) {
@@ -121,8 +144,8 @@
 
   function renderStats() {
     var s = settings.stats || {};
-    $('ftStats').textContent = '已生效 ' + (s.injectedVideos || 0) + ' 个视频 · '
-      + (s.injectedEntries || 0) + ' 条字幕';
+    $('ftStats').textContent = '注入 ' + (s.injectedVideos || 0) + ' 个视频 · 服务端生成 '
+      + (s.conclusionReady || 0) + ' 次 · 第三方 ' + (s.externalReady || 0) + ' 次';
   }
 
   // ---------------------------------------------------------------- 表单读取
@@ -143,6 +166,21 @@
     s.primaryLang = $('primaryLang').value;
     s.secondaryLang = $('secondaryLang').value;
 
+    s.sources.existing = $('srcExisting').checked;
+    s.sources.conclusion = $('srcConclusion').checked;
+    s.sources.conclusionWait = Number($('conclusionWait').value);
+    s.sources.external = $('srcExternal').checked;
+    s.sources.externalPreset = $('externalPreset').value;
+    s.sources.externalUrl = $('externalUrl').value.trim();
+    s.sources.externalToken = $('externalToken').value;
+    s.sources.externalTokenIn = $('externalTokenIn').value;
+    s.sources.externalTokenHeader = $('externalTokenHeader').value.trim() || 'Authorization';
+    s.sources.externalMode = $('externalMode').value;
+    s.sources.externalListPath = $('externalListPath').value.trim();
+    s.sources.externalTextField = $('externalTextField').value.trim() || 'content';
+    s.sources.externalFromField = $('externalFromField').value.trim() || 'from';
+    s.sources.externalToField = $('externalToField').value.trim() || 'to';
+
     s.style.fontSize = Number($('fontSize').value);
     s.style.bottom = Number($('bottom').value);
     s.style.strokeWidth = Number($('strokeWidth').value);
@@ -150,13 +188,6 @@
     s.style.maxWidth = Number($('maxWidth').value);
     s.style.color = $('color').value;
     s.style.strokeColor = $('strokeColor').value;
-
-    s.asr.enabled = $('asrEnabled').checked;
-    s.asr.endpoint = $('asrEndpoint').value.trim();
-    s.asr.apiKey = $('asrApiKey').value;
-    s.asr.model = $('asrModel').value.trim() || 'whisper-1';
-    s.asr.language = $('asrLanguage').value.trim();
-    s.asr.chunkSeconds = Number($('asrChunkSeconds').value);
 
     s.debug = $('debug').checked;
 
@@ -169,11 +200,18 @@
     var inputs = document.querySelectorAll('input, select');
     for (var i = 0; i < inputs.length; i++) {
       var el = inputs[i];
-      if (el.id === 'asrApiKey') {
-        // 密钥改动也存，但不触发内容脚本重载（避免无谓的整页重算）
+      if (el.id === 'externalToken') {
+        // 密钥改动也存，但不触发内容脚本重载
         el.addEventListener('change', function () {
           settings = collect();
           persist(false);
+        });
+        continue;
+      }
+      if (el.id === 'externalPreset') {
+        el.addEventListener('change', function () {
+          writePresetDefaults(true);
+          onFormChange({ target: { id: 'externalPreset' } });
         });
         continue;
       }
@@ -181,10 +219,10 @@
       if (el.type === 'range') el.addEventListener('input', onFormChange);
     }
 
-    $('btnForce').addEventListener('click', function () {
+    $('btnRetryServer').addEventListener('click', function () {
       if (tabId === null) return;
-      sendToTab(tabId, { type: 'force-open' }).then(function () {
-        setStatusLine('warn', '已发出指令，正在尝试打开字幕…');
+      setStatusLine('warn', '已请求服务端重新生成…');
+      sendToTab(tabId, { type: 'retry-server' }).then(function () {
         setTimeout(refreshStatus, 1200);
       });
     });
@@ -192,21 +230,8 @@
     $('btnOverlay').addEventListener('click', function () {
       if (tabId === null) return;
       sendToTab(tabId, { type: 'toggle-overlay' }).then(function () {
-        setTimeout(refreshStatus, 900);
+        setTimeout(refreshStatus, 700);
       });
-    });
-
-    $('btnAsr').addEventListener('click', function () {
-      if (tabId === null) return;
-      sendToTab(tabId, { type: 'start-asr' }).then(function (r) {
-        if (r && r.ok) setStatusLine('warn', '已开始识别，请保持视频播放');
-        else setStatusLine('err', (r && r.error) || '无法启动识别');
-      });
-    });
-
-    $('btnAsrStop').addEventListener('click', function () {
-      if (tabId === null) return;
-      sendToTab(tabId, { type: 'stop-asr' }).then(refreshStatus);
     });
 
     $('btnGrant').addEventListener('click', grantEndpoint);
@@ -223,7 +248,6 @@
   function onFormChange(ev) {
     settings = collect();
 
-    // 滑块的数值回显
     if (ev && ev.target) {
       var map = {
         fontSize: 'vFontSize',
@@ -231,13 +255,13 @@
         strokeWidth: 'vStrokeWidth',
         bgOpacity: 'vBgOpacity',
         maxWidth: 'vMaxWidth',
-        asrChunkSeconds: 'vChunk'
+        conclusionWait: 'vWait'
       };
       var labelId = map[ev.target.id];
       if (labelId) $(labelId).textContent = ev.target.value;
     }
 
-    // 开双语时如果没有自建层，就自动切过去 —— 原生层做不到双语
+    // 开双语时如果只要原生，就自动切到"原生 + 自建层" —— 原生做不到双语
     if (settings.bilingual && settings.injectInto === 'player') {
       settings.injectInto = 'both';
       document.querySelector('input[name="injectInto"][value="both"]').checked = true;
@@ -247,11 +271,11 @@
   }
 
   /**
-   * 让用户把 ASR 接口的域名授权给扩展。
-   * 授权后后台转发音频就不受跨域限制，自建服务不必额外开 CORS。
+   * 让用户把第三方接口的域名授权给扩展。
+   * 授权后后台转发就不受跨域限制，服务方不必额外开 CORS。
    */
   function grantEndpoint() {
-    var url = $('asrEndpoint').value.trim();
+    var url = $('externalUrl').value.trim();
     var origin = null;
     try {
       origin = new URL(url).origin + '/*';
@@ -265,7 +289,7 @@
     try {
       chrome.permissions.request({ origins: [origin] }, function (granted) {
         if (granted) setStatusLine('ok', '已授权 ' + origin);
-        else setStatusLine('warn', '授权被取消，ASR 可能因跨域失败');
+        else setStatusLine('warn', '授权被取消，第三方请求可能因跨域失败');
       });
     } catch (e) {
       setStatusLine('warn', '授权失败：' + String(e && e.message || e));
@@ -275,8 +299,7 @@
   // ---------------------------------------------------------------- 状态显示
 
   function setStatusLine(level, text) {
-    var dot = $('statusDot');
-    dot.className = 'dot ' + (level || '');
+    $('statusDot').className = 'dot ' + (level || '');
     $('statusText').textContent = text;
   }
 
@@ -285,66 +308,100 @@
       tabId = id;
       return sendToTab(id, { type: 'get-status' });
     }).then(function (status) {
-      lastStatus = status;
       render(status);
     });
   }
 
   function render(status) {
-    var meta = $('statusMeta');
+    var lines = $('statusLines');
 
     if (!status) {
       setStatusLine('', '当前标签页不是 B 站视频页');
-      meta.textContent = '打开任意 bilibili.com/video 页面后再回到这里。';
-      $('btnForce').disabled = true;
+      lines.textContent = '打开任意 bilibili.com/video 页面后再回到这里。';
+      $('btnRetryServer').disabled = true;
       $('btnOverlay').disabled = true;
-      $('btnAsr').disabled = true;
-      $('btnAsrStop').disabled = true;
       return;
     }
 
-    $('btnForce').disabled = false;
+    $('btnRetryServer').disabled = false;
     $('btnOverlay').disabled = false;
-    $('btnAsr').disabled = false;
-    $('btnAsrStop').disabled = false;
 
-    var lines = [];
+    var out = [];
     var level = '';
+    var ex = status.existing || {};
+    var sv = status.server || {};
+    var xf = status.external || {};
+    var op = status.output || {};
 
+    // —— 主状态行 ——
     if (!status.enabled) {
       setStatusLine('', '插件已关闭');
-    } else if (status.injected) {
+    } else if (op.cues) {
       level = 'ok';
-      var label = status.pick && status.pick.primaryLabel ? status.pick.primaryLabel : '字幕';
-      setStatusLine('ok', (status.pick && status.pick.isAi ? 'AI 字幕已注入：' : '字幕已注入：') + label);
-    } else if (status.subtitle && status.subtitle.total) {
+      var srcName = { existing: '已有字幕轨', server: 'B站服务端生成', external: '第三方接口' }[op.source] || op.source;
+      setStatusLine('ok', srcName + ' · 已输出 ' + op.cues + ' 条字幕');
+    } else if (sv.polling) {
       level = 'warn';
-      setStatusLine('warn', '已取到字幕列表，等待播放器响应…');
+      setStatusLine('warn', '服务端正在生成字幕…（第 ' + (sv.tries || 0) + ' 次查询）');
+    } else if (ex.injected) {
+      level = 'ok';
+      setStatusLine('ok', '字幕已注入播放器');
     } else {
       level = 'warn';
-      setStatusLine('warn', '正在等待播放器请求…');
+      setStatusLine('warn', '正在查找字幕来源…');
     }
 
-    if (status.subtitle) {
-      var langs = status.subtitle.languages.map(function (l) { return l.label; }).join('、');
-      lines.push('字幕轨：' + (langs || '无'));
+    // —— 明细 ——
+    if (ex.tracks && ex.tracks.total) {
+      var langs = (ex.tracks.languages || []).map(function (l) { return l.label; }).join('、');
+      out.push('① 已有字幕轨：' + langs + (ex.injected ? '（已注入播放器）' : ''));
+    } else {
+      out.push('① 已有字幕轨：没有');
     }
+
+    if (sv.enabled) {
+      var svText = {
+        '': '还没开始查',
+        'querying': '正在请求服务端…',
+        'pending': '服务端正在生成中',
+        'ready': '已完成，' + (sv.cues || 0) + ' 条',
+        'timeout': '等待超时，刷新页面可继续',
+        'no-speech': '服务端未识别到语音',
+        'summary-only': '服务端只产出了摘要',
+        'unsupported': '该视频不支持 AI 总结',
+        'need-login': '需要先登录 B 站',
+        'forbidden': '账号权限不足',
+        'error': '调用失败'
+      }[sv.state] || sv.state;
+      out.push('② B站服务端生成：' + svText + (sv.stid && sv.stid !== '0' ? '（任务 ' + sv.stid + '）' : ''));
+      if (sv.message) out.push('   ' + sv.message);
+      if (sv.summary) out.push('   摘要：' + sv.summary.slice(0, 60) + (sv.summary.length > 60 ? '…' : ''));
+    } else {
+      out.push('② B站服务端生成：已关闭');
+    }
+
+    if (xf.enabled) {
+      var xfText = {
+        '': '还没开始查',
+        'querying': '正在请求…',
+        'loading': '正在下载字幕文件…',
+        'ready': '已拿到，' + (xf.cues || 0) + ' 条',
+        'empty': '没返回可用字幕',
+        'unconfigured': '配置不完整',
+        'error': '请求失败'
+      }[xf.state] || xf.state;
+      out.push('③ 第三方接口：' + xfText);
+      if (xf.message) out.push('   ' + xf.message);
+    } else {
+      out.push('③ 第三方接口：已关闭');
+    }
+
     if (status.ids) {
-      lines.push('aid ' + (status.ids.aid || '?') + ' · cid ' + (status.ids.cid || '?') + (status.ids.bvid ? ' · ' + status.ids.bvid : ''));
+      out.push('aid ' + (status.ids.aid || '?') + ' · cid ' + (status.ids.cid || '?')
+        + (status.ids.bvid ? ' · ' + status.ids.bvid : ''));
     }
-    if (status.overlay) {
-      lines.push('自建渲染层：已开启（' + status.overlayCues + ' 条）');
-    }
-    if (status.asr && status.asr.running) {
-      var p = status.asr.progress || {};
-      lines.push('识别中：已提交 ' + (p.submitted || 0) + ' 片，完成 ' + (p.done || 0)
-        + '，失败 ' + (p.failed || 0) + '，字幕 ' + (p.cues || 0) + ' 条');
-    }
-    if (status.lastError) lines.push('最近错误：' + status.lastError);
 
-    meta.textContent = lines.join('\n');
-    meta.style.whiteSpace = 'pre-line';
-    if (level === 'ok') { /* 保持上面的 ok 状态 */ }
+    lines.textContent = out.join('\n');
   }
 
   // ---------------------------------------------------------------- 启动
@@ -355,6 +412,6 @@
     bind();
     return refreshStatus();
   }).then(function () {
-    setInterval(refreshStatus, 1600);
+    setInterval(refreshStatus, 1800);
   });
 })();
