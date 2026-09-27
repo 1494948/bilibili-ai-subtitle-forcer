@@ -94,7 +94,7 @@
 
   function fillForm() {
     $('enabled').checked = settings.enabled;
-    $('hdSub').textContent = 'v2.0.1';
+    $('hdSub').textContent = 'v2.1.0';
 
     var c = settings.sources;
     $('srcExisting').checked = c.existing;

@@ -121,9 +121,13 @@ if (manifest) {
   }
 
   const cs = manifest.content_scripts || [];
-  ok(cs.length >= 2, 'content_scripts 至少两条（MAIN world 注入 + 隔离世界编排）', String(cs.length));
+  // ★ 实测（Edge 153/154，headless 注入标记）：content_scripts 里只要有一条声明了
+  //   world:"MAIN"，同扩展的其他条目就会被吞掉、不注入 —— 编排层静默消失。
+  //   所以 manifest 里只允许 ISOLATED 一条，MAIN 组由 background 动态注册。
+  ok(cs.length === 1, 'content_scripts 只有 ISOLATED 一条', String(cs.length));
+  ok(cs.length === 0 || cs[0].world !== 'MAIN',
+    'manifest 里没有 world:"MAIN" 条目（它会吞掉其他 content_scripts，实测确认）');
 
-  let mainWorldEntry = null;
   let missingFiles = [];
   let badMatches = [];
   cs.forEach((entry) => {
@@ -132,24 +136,28 @@ if (manifest) {
     (entry.matches || []).forEach((m) => {
       if (m === '<all_urls>' || m === '*://*/*' || /^\*:\/\//.test(m)) badMatches.push(m);
     });
-    if (entry.world === 'MAIN') mainWorldEntry = entry;
   });
   eq(missingFiles, [], 'content_scripts 声明的 js/css 全部存在');
   eq(badMatches, [], 'content_scripts 的 matches 只写具体域名，没有全站匹配');
 
-  ok(!!mainWorldEntry, '存在一个 world: "MAIN" 的注入脚本（改播放器 XHR 必须在这个世界）');
-  if (mainWorldEntry) {
-    const mainJs = mainWorldEntry.js || [];
-    ok(mainJs.some((f) => /hook\.js$/.test(f)), 'MAIN world 里装了 hook.js');
-    ok(mainJs.some((f) => /bili-api\.js$/.test(f)), 'MAIN world 里装了 bili-api.js');
-    ok(mainJs.some((f) => /wbi\.js$/.test(f)), 'MAIN world 里装了 wbi.js（AI 总结接口要签名）');
-    ok(mainJs.some((f) => /providers\.js$/.test(f)), 'MAIN world 里装了 providers.js');
-    ok(mainWorldEntry.run_at === 'document_start',
-      'MAIN world 脚本在 document_start 运行（必须早于页面自己的请求）');
-    const mcv = parseFloat(manifest.minimum_chrome_version || '0');
-    ok(mcv >= 111, 'minimum_chrome_version ≥ 111（world: MAIN 从 Chrome 111 起支持）',
-      String(manifest.minimum_chrome_version));
-  }
+  // MAIN world 注入引擎经由 <script src> 注入（web_accessible_resources），前提都要在
+  ok((manifest.content_scripts[0].js || [])[0] === 'src/inject-hook.js',
+    '注入器 inject-hook.js 排在 content_scripts js 的第一位（document_start 最先执行）');
+  ok(exists('src/inject-hook.js'), 'src/inject-hook.js 存在');
+
+  const war = manifest.web_accessible_resources || [];
+  const warRes = [];
+  war.forEach((g) => { (g.resources || []).forEach((r) => warRes.push(r)); });
+  ['lib/bili-api.js', 'lib/wbi.js', 'lib/providers.js', 'src/hook.js'].forEach((f) => {
+    ok(warRes.indexOf(f) >= 0, 'web_accessible_resources 里有 ' + f + '（页面 <script src> 要加载它）');
+    ok(exists(f), '注入引擎文件存在：' + f);
+  });
+  const warMatched = war.some((g) => (g.matches || []).some(function (x) { return /bilibili\.com/.test(x); }));
+  ok(warMatched, 'web_accessible_resources 的 matches 覆盖 B 站域名');
+
+  const mcv = parseFloat(manifest.minimum_chrome_version || '0');
+  ok(mcv >= 111, 'minimum_chrome_version ≥ 111',
+    String(manifest.minimum_chrome_version));
 }
 
 // ---------------------------------------------------------------- 2. JS 语法
@@ -799,7 +807,10 @@ function makeSandbox() {
       runtime: {
         id: 'basf-smoke-test',
         onMessage: { addListener: noop },
+        onInstalled: { addListener: noop },
+        onStartup: { addListener: noop },
         sendMessage: noop,
+        getURL: function (p) { return 'chrome-extension://basf-smoke-test/' + p; },
         lastError: null
       },
       storage: {
@@ -807,14 +818,24 @@ function makeSandbox() {
           get: function (k, cb) { if (cb) cb({}); },
           set: function (o, cb) { if (cb) cb(); }
         },
-        onChanged: { addListener: noop }
+        onChanged: { addListener: noop },
+        sync: {
+          get: function (k, cb) { if (cb) cb({}); },
+          set: function (o, cb) { if (cb) cb(); }
+        }
       },
       tabs: {
         query: function (q, cb) { if (cb) cb([]); },
         sendMessage: noop,
         reload: noop
       },
-      permissions: { request: function (o, cb) { if (cb) cb(false); } }
+      permissions: { request: function (o, cb) { if (cb) cb(false); } },
+      scripting: {
+        getRegisteredContentScripts: function (cb) { if (cb) cb([]); },
+        registerContentScripts: function (o, cb) { if (cb) cb(); },
+        unregisterContentScripts: function (o, cb) { if (cb) cb(); },
+        executeScript: noop
+      }
     }
   };
 
@@ -855,6 +876,30 @@ smokeRun([
 smokeRun([
   'lib/bili-api.js', 'lib/wbi.js', 'lib/providers.js', 'src/hook.js'
 ], 'MAIN world 那组（bili-api + wbi + providers + hook）初始化不抛错');
+
+// service worker 冒烟：importScripts 由沙箱桥接到真实文件
+(function () {
+  const sandbox = makeSandbox();
+  const ctx = vm.createContext(sandbox);
+  sandbox.importScripts = function () {
+    for (let i = 0; i < arguments.length; i++) {
+      // importScripts 的路径相对 worker 脚本所在目录（src/），
+      // 所以 '../lib/x.js' 实际指向项目根下的 lib/x.js
+      const rel = String(arguments[i]).replace(/^\.\.\//, '');
+      vm.runInContext(read(path.join(ROOT, rel)), ctx, { filename: rel });
+    }
+  };
+  try {
+    vm.runInContext(read(path.join(ROOT, 'src/background.js')), ctx,
+      { filename: 'src/background.js', timeout: 5000 });
+    ok(true, 'service worker 初始化不抛错（含注入引擎注册逻辑）');
+  } catch (e) {
+    ok(false, 'service worker 初始化不抛错（含注入引擎注册逻辑）',
+      (e.name || 'Error') + ': ' + (e.message || e));
+    return;
+  }
+  ok(typeof sandbox.PROV === 'object', 'service worker 的 importScripts 桥接成功（PROV 已挂上）');
+})();
 
 // 单独确认关键全局真的挂上去了（挂不上就是 undefined，下游会静默失效）
 (function () {

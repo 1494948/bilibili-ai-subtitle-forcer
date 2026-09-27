@@ -2,12 +2,15 @@
   "manifest_version": 3,
   "name": "B站AI字幕强制开启器",
   "short_name": "B站AI字幕",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "让 B 站网页视频出现 AI 字幕：触发 B 站服务端生成并轮询、强行注入已有字幕轨、接入第三方字幕接口，三路来源都能输出到视频上。",
   "minimum_chrome_version": "111",
   "permissions": [
     "storage",
     "activeTab"
+  ],
+  "host_permissions": [
+    "https://www.bilibili.com/*"
   ],
   "optional_host_permissions": [
     "https://*/*",
@@ -27,25 +30,7 @@
         "https://www.bilibili.com/cheese/play/*"
       ],
       "js": [
-        "lib/bili-api.js",
-        "lib/wbi.js",
-        "lib/providers.js",
-        "src/hook.js"
-      ],
-      "world": "MAIN",
-      "run_at": "document_start",
-      "all_frames": false
-    },
-    {
-      "matches": [
-        "https://www.bilibili.com/video/*",
-        "https://www.bilibili.com/bangumi/play/*",
-        "https://www.bilibili.com/list/*",
-        "https://www.bilibili.com/medialist/play/*",
-        "https://www.bilibili.com/watchlater/*",
-        "https://www.bilibili.com/cheese/play/*"
-      ],
-      "js": [
+        "src/inject-hook.js",
         "lib/bili-api.js",
         "lib/settings.js",
         "lib/providers.js",
@@ -57,6 +42,19 @@
       ],
       "run_at": "document_start",
       "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "lib/bili-api.js",
+        "lib/wbi.js",
+        "lib/providers.js",
+        "src/hook.js"
+      ],
+      "matches": [
+        "https://www.bilibili.com/*"
+      ]
     }
   ],
   "action": {

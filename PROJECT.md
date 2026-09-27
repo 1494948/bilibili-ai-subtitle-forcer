@@ -16,15 +16,16 @@
 
 ## 2. 状态
 
-- **状态**：可用（v2.0.1，2026-09-27 发布）
+- **状态**：可用（v2.1.0，2026-09-27 发布）
 - **与 v1.0.0 的关系**：v1 只做「把 B 站已有的字幕轨强行显示出来」+ 本地 ASR 兜底。
   用户明确否掉了本地 ASR —— 要的是**服务端生成**。v2 因此砍掉 `src/asr.js`，
   新增 WBI 签名、服务端生成链路、第三方接口适配。
-- **未做的事（重要，别当成已验证）**：
-  - **没有在真实 B 站页面上做过端到端手测**。全部验证都是离线的（`tools/selftest.js`，208 项）。
-  - **AI 总结接口对哪些视频/账号开放没有实测过。** 它是 B 站「AI 视频总结」的底层接口，
-    可能对部分账号或视频不返回结果（会返回 `-1` / `-403`，扩展会如实提示，但成功率未知）。
-  - **Chrome 对这份 manifest 的实际接受度没有实机验证**。
+- **验证边界（重要，别高估也别低估）**：
+  - **注入链路已在真实 Edge 上端到端验证**（Edge 153/154，headless 模式加载扩展访问
+    B 站视频页，用 `<html>` 上的 `data-basf-*` 注入标记确认三个世界全部注入成功 —— 见坑 21/22）。
+  - **字幕数据流仍未在真实环境验证**：AI 总结接口对哪些视频/账号开放没有实测，成功率未知；
+    免登录字幕通道的真实返回也没实测过。
+  - **没做有头模式的手测**（headless 看不到播放器的渲染效果），字幕显示效果请以实际使用为准。
   - 第三方接口只内置了 JustOneAPI 一种预设，其余靠用户自填模板。
 
 ## 3. 技术栈与关键依赖
@@ -49,14 +50,14 @@
 | `src/overlay.js` | 自建字幕渲染层（双语 + 样式） |
 | `src/background.js` | service worker：第三方接口的后台代理（免 CORS）、统计 |
 | `src/popup.*` | 设置面板 |
-| `tools/selftest.js` | 离线自检（208 项，含运行时冒烟） |
+| `tools/selftest.js` | 离线自检（216 项，含运行时冒烟） |
 | `tools/make-zip.js` | 零依赖 ZIP 打包器 |
 | `tools/make-icons.py` | 零依赖 PNG 图标生成 |
 
 ## 4. 常用命令
 
 ```bash
-# 离线自检（208 项；失败退出码 1）
+# 离线自检（216 项；失败退出码 1）
 node tools/selftest.js
 
 # 打包成可发布的 zip
@@ -76,7 +77,7 @@ python tools/make-icons.py
 - **GitHub 仓库**：https://github.com/1494948/bilibili-ai-subtitle-forcer
 - **分支**：`main`
 - **产品名**：B站 AI 字幕
-- **当前版本**：v2.0.1
+- **当前版本**：v2.1.0
 - **产物命名**：`BASFCaptions-v<版本>.zip`
 - **归档位置**：`C:\AI Document\releases\bilibili-ai-subtitle-forcer\v<版本>\`
 - **推送命令（本机固定要带两个开关）**：
@@ -145,6 +146,38 @@ python tools/make-icons.py
 20. **文件对话框里选错目录是高频失误。** `releases/<项目>/v<版本>/` 里只有 zip 和发布说明，
     没有 `manifest.json`，选它会报"清单文件丢失或不可读取"。回复里同时给出两个路径时，
     必须**明确哪个才是要加载的那一个**。
+21. **★ manifest 的 `content_scripts` 里只要有一条 `world:"MAIN"`，同扩展的其他条目就会被
+    吞掉、不注入。** 这是本项目最隐蔽的一个坑（v2.1.0 才挖出来）：扩展显示已加载、
+    background 正常跑、静态 MAIN 条目正常注入，**唯独编排层（内容脚本）从未出现过** ——
+    用户看到的就是"装了没反应"，而且刷新页面也救不回来。
+    二分实验（Edge 153/154 + headless 注入标记，5 个变体）：
+
+    | 变体 | MAIN 组 | ISOLATED 组 |
+    |---|---|---|
+    | MAIN 在前、ISOLATED 在后（原样） | ✓ | ✗ |
+    | 只留 ISOLATED 一条 | — | ✓ |
+    | **两条都去掉 `world`** | ✓ | ✓ |
+    | ISOLATED 在前、MAIN 在后 | ✗ | ✓ |
+
+    **解法**：manifest 只留 ISOLATED 条目；MAIN 引擎由 `src/inject-hook.js`（内容脚本）
+    以 `<script src>` 送进页面 —— 资源在 `web_accessible_resources` 里声明，
+    `s.async = false` 保证 `bili-api → wbi → providers → hook` 的执行顺序。
+22. **`chrome.scripting.registerContentScripts({ world:'MAIN' })` 注册成功却不注入。**
+    回调没有 `lastError`、`getRegisteredContentScripts` 也查得到，但页面加载时它就是不来。
+    同批被否掉的还有"background + `tabs.onUpdated` + `executeScript`"（时序不可控）。
+    **别在这两条路上浪费时间**，直接用坑 21 的解法。
+23. **端到端验证扩展注入，用 headless + DOM 标记**：
+    ```bash
+    msedge --headless=new --disable-gpu --no-first-run \
+      --user-data-dir=<临时 profile> --load-extension=<扩展目录> \
+      --enable-logging=stderr --virtual-time-budget=12000 \
+      --dump-dom "https://www.bilibili.com/video/<BV号>/" > dom.html 2> edge.log
+    ```
+    内容脚本在 `<html>` 上 `setAttribute` 一个标记，然后 grep 标记 —— 比"看 DOM 里有没有
+    业务元素"可靠得多（业务元素可能因为流程没走到而不出现，会误判成"没注入"）。
+    `--enable-logging=stderr` 还能拿到 content script / background 的 console 输出。
+    注意：动态注册的 content script **赶不上首次安装时那个正在加载的页面**，
+    要验证持久注册得用同一个 profile 跑第二次导航。
 
 ## 7. 变更记录
 
@@ -172,5 +205,11 @@ python tools/make-icons.py
 | 2026-09-27 | manifest 加 `activeTab` 权限 | 让 popup 能读当前标签页 URL，从而区分"不是 B 站页"与"是 B 站页但没刷新"。比 `tabs` 权限的提示轻得多 |
 | 2026-09-27 | popup 状态判断改成三态 | 不是 B 站页 / 是 B 站页但没生效 / 正常。把可修复的问题明确说出来并给一键修复，而不是笼统报错 |
 | 2026-09-27 | 新增「刷新本页」按钮 | 用户点一下就 reload 当前标签页，装完扩展不用自己去按 F5 |
-| 2026-09-27 | 自检加 `vm` 沙箱运行时冒烟（198 → 208 项） | 语法通过不代表跑起来不炸，而内容脚本抛错是**静默失效**。已在 mock 环境里按 manifest 顺序真跑通两个内容脚本的初始化，并确认 `BASFxxx` 全局真的挂上了 |
+| 2026-09-27 | 自检加 `vm` 沙箱运行时冒烟（198 → 216 项） | 语法通过不代表跑起来不炸，而内容脚本抛错是**静默失效**。已在 mock 环境里按 manifest 顺序真跑通两个内容脚本的初始化，并确认 `BASFxxx` 全局真的挂上了 |
 | 2026-09-27 | 用浏览器本体 `--pack-extension` 做真机校验 | 比离线自检权威：浏览器会完整校验 manifest 与每个引用文件。Edge 153/154 打包通过 → 确认"点加载不会因清单不合法而失败" |
+| 2026-09-27 | **v2.1.0：换注入方式，真机打通注入链路** | 用户刷新后仍显示"扩展还没生效"。用 headless 真机测试抓到根因：manifest 里 `world:"MAIN"` 的条目会**吞掉其他 content_scripts** —— 编排层从未注入过。二分实验 5 个变体定位后，改用 `inject-hook.js` 以 `<script src>` 注入，三个注入标记在 Edge 153/154 上全部验证通过 |
+| 2026-09-27 | 新增 `src/inject-hook.js` + `web_accessible_resources` 声明 4 个注入文件 | 页面 `<script src>` 的加载对象必须声明为 web 可访问资源；`s.async=false` 保证 bili-api→wbi→providers→hook 的执行顺序 |
+| 2026-09-27 | 内容脚本与注入引擎加启动日志 + `<html>` 诊断标记 | 排查"装了没反应"的第一入口：F12 控制台看 `[BASF/content]` 在不在、`<html>` 上看 `data-basf-*` 标记。三条日志链（background / 内容脚本 / 注入引擎）齐全 |
+| 2026-09-27 | lib 的 `VERSION` 常量从 1.0.0 同步到 2.1.0 | 启动日志一直显示 v1.0.0，看着像加载了旧代码，排查时极具误导性 |
+| 2026-09-27 | 自检 208 → 216 项 | 新增 web_accessible_resources 检查、inject-hook.js 位置检查、service worker 冒烟（importScripts 桥接到真实文件）、"没有申请全量 tabs"守门 |
+| 2026-09-27 | 引入 headless 端到端测试法（见坑 23） | 离线自检覆盖不到"扩展到底注不注入"。真机 DOM 标记 + stderr 日志才是这个问题的唯一有效诊断手段 |

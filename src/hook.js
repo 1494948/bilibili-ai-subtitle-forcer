@@ -31,6 +31,11 @@
   if (window.__BASF_HOOK_INSTALLED__) return;
   window.__BASF_HOOK_INSTALLED__ = true;
 
+  // 与内容脚本同理的诊断标记（MAIN world 这组）
+  try {
+    document.documentElement.setAttribute('data-basf-hook', 'loaded');
+  } catch (e) { /* noop */ }
+
   // ------------------------------------------------------------ 常量
 
   var TAG = '[BASF/hook]';
@@ -748,5 +753,9 @@
   // ------------------------------------------------------------ 对外自述
 
   toContent('hook-ready', { version: NS.VERSION, href: location.href });
+  // 与内容脚本同理：无条件打一条，确认"注入引擎"真的在页面上下文里跑起来了
+  try {
+    console.log('[BASF/hook] 注入引擎已装载 v' + NS.VERSION + ' (MAIN world) @ ' + location.href);
+  } catch (e) { /* noop */ }
   log('已装载 v' + NS.VERSION);
 })();

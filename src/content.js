@@ -25,6 +25,12 @@
   var PROV = typeof globalThis !== 'undefined' ? globalThis.BASFProviders : null;
   if (!NS || !SET) return;
 
+  // 决定性诊断标记：写在 <html> 上，dump-dom 或 F12 一眼就能确认这个世界有没有注入。
+  // document_start 时 documentElement 已经存在，setAttribute 是同步的，不会丢。
+  try {
+    document.documentElement.setAttribute('data-basf-content', 'loaded');
+  } catch (e) { /* noop */ }
+
   var TAG = '[BASF/content]';
 
   // 播放器相关选择器（B站改版时主要改这里）
@@ -796,6 +802,12 @@
   }
 
   // ------------------------------------------------------------ 启动
+
+  // 无条件打一条启动标记。排查"装了没反应"时，第一件事就是确认这行在不在：
+  // 在 → 内容脚本注入成功了，问题在后面；不在 → 根本没注入（多半是页面比扩展先打开）
+  try {
+    console.log('[BASF/content] 内容脚本已装载 v' + NS.VERSION + ' @ ' + location.href);
+  } catch (e) { /* noop */ }
 
   loadSettings().then(function () {
     if (!settings.enabled) {

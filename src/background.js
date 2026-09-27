@@ -26,6 +26,14 @@ function ensureDefaults() {
   });
 }
 
+/**
+ * MAIN world 注入引擎（src/hook.js）不经过这里 —— 它由内容脚本
+ * src/inject-hook.js 以 <script src> 方式送进页面（web_accessible_resources）。
+ * 实测 Edge 153/154 上 manifest 的 world:"MAIN" 条目会吞掉其他 content_scripts，
+ * chrome.scripting.registerContentScripts({world:'MAIN'}) 注册成功却不注入，
+ * 都不可靠；这个经典手法是唯一在真机上验证通过的。
+ */
+
 chrome.runtime.onInstalled.addListener(function (details) {
   ensureDefaults();
   if (details && details.reason === 'install') {

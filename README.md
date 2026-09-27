@@ -45,6 +45,14 @@ GET https://api.bilibili.com/x/v2/dm/view?aid=<avid>&oid=<cid>&type=1
 并拆掉两道闸门（顶层 `need_login_subtitle` 置 `false`、条目 `is_lock` 置 `false`）。
 播放器收到被改过的 JSON，自己就渲染出「中文（自动生成）」，扩展再替你点开。
 
+> **注入引擎怎么进页面的**（这块踩过大坑，值得说明）：改页面的 `XMLHttpRequest`
+> 必须运行在页面的 MAIN world 里（内容脚本默认在隔离世界，改不到）。但实测发现
+> manifest 的 `content_scripts` 里**只要有一条 `world:"MAIN"`，同扩展的其他条目就会被
+> 吞掉、不注入** —— 扩展显示已加载，编排层却从未出现，表现就是"装了没反应"。
+> 所以现在 manifest 里只声明普通内容脚本，由 `src/inject-hook.js` 在 `document_start`
+> 同步创建 `<script src>` 把注入引擎送进页面（资源在 `web_accessible_resources` 里声明）。
+> 这是唯一在真实 Edge 上验证通过的路子。
+
 **注入的是播放器自己的数据源，所以字幕是 B 站自己渲染和播放的** —— 这正是它能用原生字幕的原因。
 
 ### ② B 站服务端生成：让服务端去干活
@@ -144,7 +152,7 @@ GET https://api.bilibili.com/x/web-interface/view/conclusion/get
 
 ## 5. 已知限制与尚未验证的部分
 
-**已经离线验证过的**（`node tools/selftest.js`，**208 项全通过**）：
+**已经离线验证过的**（`node tools/selftest.js`，**216 项全通过**）：
 
 - manifest 合法性：MV3 必填项、引用的文件是否都存在、`matches` 没有写成全站、
   `optional_host_permissions` 与 `host_permissions` 不重复、MAIN world 里装齐了依赖、
@@ -168,13 +176,14 @@ GET https://api.bilibili.com/x/web-interface/view/conclusion/get
 （`msedge.exe --pack-extension=<目录>`），浏览器会完整校验 manifest 与它引用的每个文件。
 能在 Edge 153 / 154 上打包成功，就等于确认了"点加载不会因为清单不合法而失败"。
 
-**尚未验证的（请知悉）**：
+**验证边界（重要）**：
 
-- **没有在真实 B 站页面上做过端到端手测。** 所有验证都是离线的。
-- **AI 总结接口对哪些视频开放、账号需要什么等级，没有实测过。** 它是 B 站「AI 视频总结」
-  功能的底层接口，可能对部分账号/视频不开放（遇到会返回 `-1` 或 `403`，扩展会如实告诉你）。
-- **Chrome 对这份 manifest 的实际接受度没有实机验证**，尤其 `optional_host_permissions`
-  与 `content_scripts.world`。
+- ✅ **注入链路已在真实 Edge 上端到端验证**：headless 模式加载扩展访问 B 站视频页，
+  `<html>` 上三个注入标记（`data-basf-injector` / `data-basf-content` / `data-basf-hook`）
+  全部出现，启动日志链完整。Edge 版本 153 / 154。
+- ❌ **字幕数据流仍未在真实环境验证**：AI 总结接口对哪些视频/账号开放没有实测过，成功率未知；
+  免登录字幕通道的真实返回也没实测过。
+- ❌ **没做有头模式的手测**（headless 看不到播放器渲染），字幕显示效果以实际使用为准。
 - B 站接口随时可能变。失效时主要改这几处：`lib/bili-api.js` 的 `SUBTITLE_ENDPOINTS`、
   `lib/providers.js` 的 `CONCLUSION_URL` 与状态判定、`src/content.js` 顶部的 `SEL` 选择器。
 
@@ -215,6 +224,12 @@ GET https://api.bilibili.com/x/web-interface/view/conclusion/get
 
 面板底部会显示它看到的当前页面地址，方便你确认插件看的是不是同一个页面。
 
+**想看更细的诊断？** 按 F12：
+- **控制台**里看有没有 `[BASF/content] 内容脚本已装载` —— 没有就是内容脚本没注入
+  （多半是页面比扩展先打开，刷新即可）；有，再看有没有 `[BASF/hook] 注入引擎已装载`。
+- **Elements** 面板选中 `<html>` 标签，能看到 `data-basf-injector` / `data-basf-content` /
+  `data-basf-hook` 三个属性，三个都是 `loaded` 说明注入链路完整。
+
 **更新了扩展代码之后也要刷新页面** —— 在 `chrome://extensions` / `edge://extensions`
 点该扩展卡片上的「重新加载」，然后刷新 B 站页面。
 
@@ -223,7 +238,7 @@ GET https://api.bilibili.com/x/web-interface/view/conclusion/get
 ## 8. 开发
 
 ```bash
-node tools/selftest.js      # 离线自检，208 项；失败退出码 1
+node tools/selftest.js      # 离线自检，216 项；失败退出码 1
 node tools/make-zip.js      # 打包，产物在 dist-extension-v<版本>/
 node tools/make-zip.js --out <目录>   # 指定输出目录
 python tools/make-icons.py  # 重新生成图标（纯标准库，不需要 Pillow）
