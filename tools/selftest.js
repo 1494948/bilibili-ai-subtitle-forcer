@@ -90,7 +90,11 @@ if (manifest) {
   eq(hostsOverBroad, [], 'host_permissions 里没有默认全站权限（自定义接口走 optional）');
 
   const perms = manifest.permissions || [];
-  eq(perms, ['storage'], 'permissions 只申请 storage');
+  eq(perms.slice().sort(), ['activeTab', 'storage'],
+    'permissions 只申请 storage 与 activeTab');
+  // activeTab 是"点图标时临时读当前页 URL"，权限提示很轻；
+  // tabs 是全量权限，会带上"读取您的浏览记录"的重警告，没必要申请
+  ok(perms.indexOf('tabs') < 0, '没有申请全量 tabs 权限（用 activeTab 替代）');
 
   const opt = manifest.optional_host_permissions || [];
   const overlap = opt.filter((o) => hosts.indexOf(o) >= 0);
@@ -712,6 +716,161 @@ ok(/importScripts\('\.\.\/lib\/settings\.js', '\.\.\/lib\/providers\.js'\)/.test
 ok(/external-fetch/.test(bgSrc), 'background 提供第三方接口的后台代理');
 
 ok(!exists('src/asr.js'), '本地 ASR 模块已移除');
+
+// ---------------------------------------------------------------- 12. 运行时冒烟
+
+section('运行时冒烟（在 mock 的浏览器环境里真跑一遍）');
+
+// 语法检查只证明"能解析"，不证明"跑起来不炸"。内容脚本一旦初始化就抛错，
+// 表现是**静默失效** —— 扩展显示已加载，但页面上什么都不发生，
+// 排查起来极其费劲。所以这里用 vm 造一个假的浏览器环境，按 manifest 里的
+// 加载顺序真的执行一遍，任何 ReferenceError / TypeError 都会被抓出来。
+const vm = require('vm');
+
+function noop() {}
+
+function makeEl() {
+  return {
+    style: { setProperty: noop, removeProperty: noop },
+    classList: { add: noop, remove: noop, contains: function () { return false; }, toggle: noop },
+    setAttribute: noop,
+    getAttribute: function () { return null; },
+    addEventListener: noop,
+    removeEventListener: noop,
+    appendChild: noop,
+    removeChild: noop,
+    insertBefore: noop,
+    querySelector: function () { return null; },
+    querySelectorAll: function () { return []; },
+    dispatchEvent: noop,
+    textContent: '',
+    className: '',
+    id: '',
+    parentNode: null
+  };
+}
+
+function makeSandbox() {
+  const doc = {
+    body: null,
+    head: null,
+    documentElement: makeEl(),
+    readyState: 'loading',
+    hidden: false,
+    title: '',
+    addEventListener: noop,
+    removeEventListener: noop,
+    createElement: makeEl,
+    createTextNode: function () { return makeEl(); },
+    querySelector: function () { return null; },
+    querySelectorAll: function () { return []; },
+    getElementById: function () { return null; }
+  };
+
+  function XHR() {}
+  XHR.prototype.open = noop;
+  XHR.prototype.send = noop;
+  XHR.prototype.addEventListener = noop;
+  XHR.prototype.abort = noop;
+
+  const sandbox = {
+    console: console,
+    document: doc,
+    XMLHttpRequest: XHR,
+    location: {
+      href: 'https://www.bilibili.com/video/BV1MU411S7iJ/',
+      protocol: 'https:',
+      host: 'www.bilibili.com',
+      origin: 'https://www.bilibili.com'
+    },
+    navigator: { userAgent: 'node-sandbox' },
+    fetch: function () { return Promise.resolve({ ok: false, status: 0 }); },
+    setTimeout: function () { return 0; },
+    clearTimeout: noop,
+    setInterval: function () { return 0; },
+    clearInterval: noop,
+    requestAnimationFrame: function () { return 0; },
+    cancelAnimationFrame: noop,
+    addEventListener: noop,
+    removeEventListener: noop,
+    postMessage: noop,
+    dispatchEvent: noop,
+    chrome: {
+      runtime: {
+        id: 'basf-smoke-test',
+        onMessage: { addListener: noop },
+        sendMessage: noop,
+        lastError: null
+      },
+      storage: {
+        local: {
+          get: function (k, cb) { if (cb) cb({}); },
+          set: function (o, cb) { if (cb) cb(); }
+        },
+        onChanged: { addListener: noop }
+      },
+      tabs: {
+        query: function (q, cb) { if (cb) cb([]); },
+        sendMessage: noop,
+        reload: noop
+      },
+      permissions: { request: function (o, cb) { if (cb) cb(false); } }
+    }
+  };
+
+  // 浏览器里 window === globalThis，脚本会同时用这两个名字
+  sandbox.window = sandbox;
+  sandbox.self = sandbox;
+  sandbox.globalThis = sandbox;
+  return sandbox;
+}
+
+/** 按 manifest 里的顺序真跑一遍；setTimeout 都被 mock 成不执行，所以只测同步初始化 */
+function smokeRun(files, label) {
+  const sandbox = makeSandbox();
+  let ctx;
+  try {
+    ctx = vm.createContext(sandbox);
+  } catch (e) {
+    ok(false, label, 'createContext 失败: ' + e.message);
+    return;
+  }
+  for (let i = 0; i < files.length; i++) {
+    const rel = files[i];
+    try {
+      vm.runInContext(read(path.join(ROOT, rel)), ctx, { filename: rel, timeout: 5000 });
+    } catch (e) {
+      ok(false, label, rel + ' → ' + (e.name || 'Error') + ': ' + (e.message || e));
+      return;
+    }
+  }
+  ok(true, label);
+}
+
+// manifest 里两条 content_scripts 的实际顺序
+smokeRun([
+  'lib/bili-api.js', 'lib/settings.js', 'lib/providers.js', 'src/overlay.js', 'src/content.js'
+], '隔离世界那组（bili-api + settings + providers + overlay + content）初始化不抛错');
+
+smokeRun([
+  'lib/bili-api.js', 'lib/wbi.js', 'lib/providers.js', 'src/hook.js'
+], 'MAIN world 那组（bili-api + wbi + providers + hook）初始化不抛错');
+
+// 单独确认关键全局真的挂上去了（挂不上就是 undefined，下游会静默失效）
+(function () {
+  const sandbox = makeSandbox();
+  const ctx = vm.createContext(sandbox);
+  ['lib/bili-api.js', 'lib/wbi.js', 'lib/providers.js', 'lib/settings.js'].forEach(function (f) {
+    vm.runInContext(read(path.join(ROOT, f)), ctx, { filename: f });
+  });
+  ok(typeof sandbox.BASFBiliApi === 'object', '库里挂上了 globalThis.BASFBiliApi');
+  ok(typeof sandbox.BASFWbi === 'object', '库里挂上了 globalThis.BASFWbi');
+  ok(typeof sandbox.BASFProviders === 'object', '库里挂上了 globalThis.BASFProviders');
+  ok(typeof sandbox.BASFSettings === 'object', '库里挂上了 globalThis.BASFSettings');
+  ok(typeof sandbox.BASFWbi.md5 === 'function', 'BASFWbi.md5 是可调用的');
+  ok(typeof sandbox.BASFProviders.analyzeConclusion === 'function', 'BASFProviders.analyzeConclusion 可调用');
+  ok(typeof sandbox.BASFSettings.normalize === 'function', 'BASFSettings.normalize 可调用');
+})();
 
 // ---------------------------------------------------------------- 汇总
 

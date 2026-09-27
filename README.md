@@ -102,8 +102,15 @@ GET https://api.bilibili.com/x/web-interface/view/conclusion/get
 
 > 需要 **Chrome 111+**（`content_scripts` 的 `world: "MAIN"` 从这一版起支持）。
 
-也可以用打包好的 zip：`node tools/make-zip.js` → `dist-extension-v2.0.0/BASFCaptions-v2.0.0.zip`，
-解压后再按上面加载（Chrome 不接受直接拖 zip）。
+> **⚠️ 装好后必须刷新一次已经打开的 B 站页面**（F5），否则插件不会生效。
+> 内容脚本要在页面加载的最开始就注入，装在已经打开的页面上是赶不上的 ——
+> 这是 Chromium 扩展的固有行为，不是 bug。装完新开的页面不受影响。
+>
+> 忘了刷新也没事：点扩展图标面板会直接告诉你「扩展还没在这个页面上生效」，
+> 并给一个**「刷新本页」**按钮，点一下就修好了。
+
+也可以用打包好的 zip：`node tools/make-zip.js` → `dist-extension-v<版本>/BASFCaptions-v<版本>.zip`，
+解压后再按上面加载（Chrome / Edge 都不接受直接拖 zip 进去装）。
 
 ---
 
@@ -137,11 +144,16 @@ GET https://api.bilibili.com/x/web-interface/view/conclusion/get
 
 ## 5. 已知限制与尚未验证的部分
 
-**已经离线验证过的**（`node tools/selftest.js`，**198 项全通过**）：
+**已经离线验证过的**（`node tools/selftest.js`，**208 项全通过**）：
 
 - manifest 合法性：MV3 必填项、引用的文件是否都存在、`matches` 没有写成全站、
-  `optional_host_permissions` 与 `host_permissions` 不重复、MAIN world 里装齐了依赖
+  `optional_host_permissions` 与 `host_permissions` 不重复、MAIN world 里装齐了依赖、
+  没有申请全量 `tabs` 权限
 - 全部 JS 的语法（用 `new Function` 解析，不起子进程）
+- **运行时冒烟**：用 `vm` 造一个假的浏览器环境（document / chrome / XMLHttpRequest 全 mock），
+  按 manifest 里的加载顺序**真的执行一遍**两个内容脚本。语法没问题不等于跑起来不炸 ——
+  内容脚本初始化时抛错的表现是**静默失效**（扩展显示已加载、页面上什么都没发生），
+  排查极费劲，所以这一步专门守它
 - `popup.html` 的 `id` 与 `popup.js` 引用的是否对得上、本地资源是否存在
 - **MD5 与 WBI 签名**：对照 RFC 1321 向量（含多块输入）与**官方文档给的 `w_rid` 权威值**逐位一致；
   中文/emoji 的 UTF-8 编码、空格编成 `%20`、`!'()*` 过滤都单测过
@@ -151,6 +163,10 @@ GET https://api.bilibili.com/x/web-interface/view/conclusion/get
 - **第三方接口**：模板替换、三种响应解读、justoneapi 的业务错误码、坏数据不崩
 - 注入核心 `mergeSubtitle` 的六种情形（新建 / 不覆盖只追加 / 幂等 / 报错不注入 / 空数据 / 关闸门）
 - 语言选择、字幕 JSON 解析、时间轴二分查找（含切点边界）、设置越界钳制
+
+**另有一步真机校验**：把扩展交给**浏览器本体**打包
+（`msedge.exe --pack-extension=<目录>`），浏览器会完整校验 manifest 与它引用的每个文件。
+能在 Edge 153 / 154 上打包成功，就等于确认了"点加载不会因为清单不合法而失败"。
 
 **尚未验证的（请知悉）**：
 
@@ -189,16 +205,25 @@ GET https://api.bilibili.com/x/web-interface/view/conclusion/get
 需要更新 `src/content.js` 里的 `SEL` 选择器。
 
 **装了没反应？**
-打开扩展面板看状态。显示"当前标签页不是 B 站视频页"说明没匹配上
-（本扩展只匹配 `/video/`、`/bangumi/play/`、`/list/`、`/medialist/play/`、`/watchlater/`、`/cheese/play/`）。
-如果扩展是在页面已经加载完之后才被启用的，这一次赶不上，**强制刷新一次**即可。
+先看扩展面板的状态：
+
+| 面板显示 | 什么意思 | 怎么办 |
+|---|---|---|
+| 「扩展还没在这个页面上生效」 | 这是 B 站视频页，但页面比扩展先打开 | 点面板里的**「刷新本页」** |
+| 「当前标签页不是 B 站视频页」 | 确实不是视频页 | 打开一个视频页再回来看 |
+| 「当前是 B 站页面，但不是视频页」 | 是 B 站，但不是视频页 | 本扩展只匹配 `/video/`、`/bangumi/play/`、`/list/`、`/medialist/play/`、`/watchlater/`、`/cheese/play/` |
+
+面板底部会显示它看到的当前页面地址，方便你确认插件看的是不是同一个页面。
+
+**更新了扩展代码之后也要刷新页面** —— 在 `chrome://extensions` / `edge://extensions`
+点该扩展卡片上的「重新加载」，然后刷新 B 站页面。
 
 ---
 
 ## 8. 开发
 
 ```bash
-node tools/selftest.js      # 离线自检，198 项；失败退出码 1
+node tools/selftest.js      # 离线自检，208 项；失败退出码 1
 node tools/make-zip.js      # 打包，产物在 dist-extension-v<版本>/
 node tools/make-zip.js --out <目录>   # 指定输出目录
 python tools/make-icons.py  # 重新生成图标（纯标准库，不需要 Pillow）

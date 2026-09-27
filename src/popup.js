@@ -13,6 +13,8 @@
 
   var settings = SET.defaults();
   var tabId = null;
+  /** 当前标签页的地址。需要在 manifest 里声明 activeTab 才能拿到 —— 见 withActiveTab 的注释 */
+  var tabUrl = '';
   var saveTimer = 0;
 
   function $(id) {
@@ -21,17 +23,33 @@
 
   // ---------------------------------------------------------------- 与标签页通信
 
+  /**
+   * 取当前标签页。
+   *
+   * 注意 `tab.url`：没有 `tabs` 权限、也没有该站点的 host 权限时它是 undefined。
+   * 那样就分不清"这个标签页不是 B 站"和"是 B 站但内容脚本还没生效"，
+   * 只能笼统报一句错 —— v2.0.0 就是这么把一个可修复的问题说成"不是 B 站页面"的。
+   * 声明 `activeTab` 后，用户点扩展图标的那一刻就临时拿到读 url 的权限。
+   */
   function withActiveTab() {
     return new Promise(function (resolve) {
       try {
         chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-          var t = tabs && tabs[0];
-          resolve(t && t.id ? t.id : null);
+          resolve(tabs && tabs[0] ? tabs[0] : null);
         });
       } catch (e) {
         resolve(null);
       }
     });
+  }
+
+  /** 与 manifest 里 content_scripts 的 matches 保持一致 */
+  function isBiliVideoUrl(u) {
+    return /^https:\/\/www\.bilibili\.com\/(video|bangumi\/play|list|medialist\/play|watchlater|cheese\/play)\//.test(String(u || ''));
+  }
+
+  function isBiliUrl(u) {
+    return /^https:\/\/www\.bilibili\.com\//.test(String(u || ''));
   }
 
   function sendToTab(id, msg) {
@@ -76,7 +94,7 @@
 
   function fillForm() {
     $('enabled').checked = settings.enabled;
-    $('hdSub').textContent = 'v2.0.0';
+    $('hdSub').textContent = 'v2.0.1';
 
     var c = settings.sources;
     $('srcExisting').checked = c.existing;
@@ -236,6 +254,20 @@
 
     $('btnGrant').addEventListener('click', grantEndpoint);
 
+    // 最有用的一颗按钮：扩展装好/更新后，已打开的页面需要重新加载才会注入内容脚本
+    $('btnReload').addEventListener('click', function () {
+      if (tabId === null) return;
+      setStatusLine('warn', '正在刷新页面…');
+      try {
+        chrome.tabs.reload(tabId, {}, function () {
+          void chrome.runtime.lastError;
+          window.close();
+        });
+      } catch (e) {
+        setStatusLine('err', '刷新失败：' + String(e && e.message || e));
+      }
+    });
+
     if (chrome.storage && chrome.storage.onChanged) {
       chrome.storage.onChanged.addListener(function (changes, area) {
         if (area !== 'local' || !changes[SET.STORAGE_KEY]) return;
@@ -304,9 +336,10 @@
   }
 
   function refreshStatus() {
-    return withActiveTab().then(function (id) {
-      tabId = id;
-      return sendToTab(id, { type: 'get-status' });
+    return withActiveTab().then(function (tab) {
+      tabId = tab && typeof tab.id === 'number' ? tab.id : null;
+      tabUrl = tab && tab.url ? String(tab.url) : '';
+      return sendToTab(tabId, { type: 'get-status' });
     }).then(function (status) {
       render(status);
     });
@@ -315,16 +348,42 @@
   function render(status) {
     var lines = $('statusLines');
 
+    // 联系不上内容脚本 —— 这时**不能**断言"不是 B 站页面"，
+    // 最常见的情况其实是：扩展刚装上，而页面在扩展之前就打开了。
     if (!status) {
-      setStatusLine('', '当前标签页不是 B 站视频页');
-      lines.textContent = '打开任意 bilibili.com/video 页面后再回到这里。';
       $('btnRetryServer').disabled = true;
       $('btnOverlay').disabled = true;
+      $('btnReload').disabled = tabId === null;
+
+      if (isBiliVideoUrl(tabUrl)) {
+        setStatusLine('warn', '扩展还没在这个页面上生效');
+        lines.textContent =
+          '这是 B 站视频页，但内容脚本没有响应。\n'
+          + '扩展是在页面打开之后才装上的 —— 页面需要在扩展之前就加载好脚本。\n\n'
+          + '点下面的「刷新本页」即可生效。';
+        $('btnReload').classList.add('basf-need');
+      } else if (isBiliUrl(tabUrl)) {
+        setStatusLine('', '当前是 B 站页面，但不是视频页');
+        lines.textContent =
+          '本扩展只在视频页工作：\n/video/、/bangumi/play/、/list/、/medialist/play/、'
+          + '/watchlater/、/cheese/play/。';
+        $('btnReload').classList.remove('basf-need');
+      } else if (tabUrl) {
+        setStatusLine('', '当前标签页不是 B 站视频页');
+        lines.textContent = '打开任意 bilibili.com/video 页面后再回到这里。';
+        $('btnReload').classList.remove('basf-need');
+      } else {
+        setStatusLine('', '读不到当前标签页的信息');
+        lines.textContent = '点一下页面任意位置，再重新打开本面板。';
+        $('btnReload').classList.remove('basf-need');
+      }
       return;
     }
 
     $('btnRetryServer').disabled = false;
     $('btnOverlay').disabled = false;
+    $('btnReload').disabled = false;
+    $('btnReload').classList.remove('basf-need');
 
     var out = [];
     var level = '';
@@ -399,6 +458,10 @@
     if (status.ids) {
       out.push('aid ' + (status.ids.aid || '?') + ' · cid ' + (status.ids.cid || '?')
         + (status.ids.bvid ? ' · ' + status.ids.bvid : ''));
+    }
+
+    if (tabUrl) {
+      out.push('当前页面：' + tabUrl.replace(/^https:\/\//, '').slice(0, 58));
     }
 
     lines.textContent = out.join('\n');
