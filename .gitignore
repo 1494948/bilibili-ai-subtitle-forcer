@@ -1,0 +1,23 @@
+# 构建产物：分发包只保留 C:\AI Document\releases\bilibili-ai-subtitle-forcer\v<版本>\ 一份
+dist-*/
+*.zip
+*.crx
+*.pem
+
+# 依赖与编辑器
+node_modules/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# 临时与日志（本工作台的约定：中转文件一律不留）
+*.log
+_*.txt
+_*.json
+_*.md
+
+# 密钥：绝不能进仓库
+.env
+*.key
+secrets.*

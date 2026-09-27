@@ -1,0 +1,9 @@
+# 统一行尾，避免 Windows 上检出后整个仓库显示为已修改
+* text=auto eol=lf
+
+# 二进制文件不做行尾转换
+*.png binary
+*.jpg binary
+*.zip binary
+*.crx binary
+*.pem binary

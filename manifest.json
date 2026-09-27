@@ -1,0 +1,75 @@
+{
+  "manifest_version": 3,
+  "name": "B站AI字幕强制开启器",
+  "short_name": "B站AI字幕",
+  "version": "1.0.0",
+  "description": "强行让哔哩哔哩播放器长出「AI 自动生成字幕」开关并真实可用：免登录字幕通道预取 + 播放器接口响应注入，另附可选 ASR 兜底与双语样式自定义。",
+  "minimum_chrome_version": "111",
+  "permissions": [
+    "storage"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.bilibili.com/video/*",
+        "https://www.bilibili.com/bangumi/play/*",
+        "https://www.bilibili.com/list/*",
+        "https://www.bilibili.com/medialist/play/*",
+        "https://www.bilibili.com/watchlater/*",
+        "https://www.bilibili.com/cheese/play/*"
+      ],
+      "js": [
+        "lib/bili-api.js",
+        "src/hook.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://www.bilibili.com/video/*",
+        "https://www.bilibili.com/bangumi/play/*",
+        "https://www.bilibili.com/list/*",
+        "https://www.bilibili.com/medialist/play/*",
+        "https://www.bilibili.com/watchlater/*",
+        "https://www.bilibili.com/cheese/play/*"
+      ],
+      "js": [
+        "lib/bili-api.js",
+        "lib/settings.js",
+        "src/overlay.js",
+        "src/asr.js",
+        "src/content.js"
+      ],
+      "css": [
+        "src/content.css"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "B站AI字幕强制开启器",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

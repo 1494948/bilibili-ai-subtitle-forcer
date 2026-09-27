@@ -1,0 +1,111 @@
+/* src/content.css —— 注入到 B 站页面里的样式
+   两类东西：
+     1. 自建字幕渲染层（.basf-overlay）—— 支持双语与自定义样式
+     2. 状态浮标（.basf-badge）—— 一次性提示，鼠标可点
+   全部带 basf- 前缀并提高特异性，尽量不与站内样式互相污染。 */
+
+/* ---------------- 自建字幕层 ---------------- */
+
+.bpx-player-video-wrap > .basf-overlay,
+.bpx-player-video-area > .basf-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--basf-bottom, 8%);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.22em;
+  box-sizing: border-box;
+  padding: 0 3%;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  font-family: var(--basf-font-family, "Microsoft YaHei", "PingFang SC", system-ui, sans-serif);
+}
+
+.bpx-player-video-wrap > .basf-overlay.basf-visible,
+.bpx-player-video-area > .basf-overlay.basf-visible {
+  opacity: 1;
+}
+
+.basf-overlay .basf-overlay-line {
+  box-sizing: border-box;
+  max-width: var(--basf-max-width, 84%);
+  padding: 0.14em 0.5em;
+  border-radius: 0.24em;
+  font-size: var(--basf-font-size, 26px);
+  line-height: 1.38;
+  font-weight: 600;
+  color: var(--basf-color, #ffffff);
+  background: var(--basf-bg, rgba(0, 0, 0, 0.45));
+  text-shadow: var(--basf-text-shadow, 0 1px 3px rgba(0, 0, 0, 0.75));
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* 空行不占位，否则双语会多出一条背景条 */
+.basf-overlay .basf-overlay-line:empty {
+  display: none;
+}
+
+.basf-overlay .basf-overlay-sub {
+  font-size: calc(var(--basf-font-size, 26px) * var(--basf-sub-scale, 0.82));
+  font-weight: 500;
+  opacity: 0.95;
+}
+
+/* 自建层开启时隐藏 B 站原生字幕，避免两层叠在一起 */
+body.basf-overlay-on .bpx-player-subtitle-wrap {
+  display: none !important;
+}
+
+/* ---------------- 状态浮标 ---------------- */
+
+#basf-badge.basf-badge {
+  position: fixed;
+  right: 18px;
+  bottom: 76px;
+  z-index: 2147483000;
+  box-sizing: border-box;
+  max-width: 340px;
+  padding: 7px 13px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(24, 24, 27, 0.92);
+  color: #ffffff;
+  font: 12px/1.45 "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+#basf-badge.basf-badge.basf-badge-show {
+  opacity: 0.97;
+  transform: none;
+  pointer-events: auto;
+}
+
+#basf-badge.basf-badge:hover {
+  opacity: 1;
+}
+
+#basf-badge.basf-badge[data-level="ok"] {
+  border-color: rgba(0, 229, 122, 0.5);
+}
+
+#basf-badge.basf-badge[data-level="warn"] {
+  border-color: rgba(255, 176, 32, 0.58);
+}
+
+#basf-badge.basf-badge[data-level="info"] {
+  border-color: rgba(84, 169, 255, 0.5);
+}

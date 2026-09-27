@@ -1,0 +1,24 @@
+{
+  "name": "bilibili-ai-subtitle-forcer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "B站AI字幕强制开启器 —— 让网页播放器强行长出「AI 自动生成字幕」开关并真实可用（Chrome/Edge MV3 扩展）",
+  "keywords": [
+    "bilibili",
+    "subtitle",
+    "chrome-extension",
+    "manifest-v3",
+    "ai-subtitle"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "node tools/selftest.js",
+    "zip": "node tools/make-zip.js",
+    "icons": "python tools/make-icons.py"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "engines": {
+    "node": ">=18"
+  }
+}
